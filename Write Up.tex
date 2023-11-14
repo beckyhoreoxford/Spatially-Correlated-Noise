@@ -1,0 +1,1449 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1.5in]{geometry}
+\usepackage{graphicx}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{svg}
+\usepackage[center]{caption}
+\usepackage{setspace}
+\usepackage{listings}
+\graphicspath{{images/}}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+
+\doublespacing
+
+\title{Undergrad Coursework}
+\author{Becky Hore}
+\date{\today}
+
+\begin{document}
+
+%INTRO PAGE
+\begin{center}
+\huge Generating Spatially Correlated Noise for Computational Biological Simulations
+\newline
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = 0.9\textwidth]{titleimagewithbackground}
+\end{figure} 
+
+\LARGE Candidate Number: 1052113\\
+
+\vskip .5cm \large
+University of Oxford\\
+Trinity Term 2023
+\vskip .5cm \large
+\Large BA Computer Science
+\end{center}
+
+\thispagestyle{empty}
+
+\pagebreak
+
+%ABSTRACT
+\section*{Abstract}
+
+\vskip .5cm
+\normalsize
+
+Biological simulations require spatially correlated, normally distributed random noise to be comparable to real life experiments. This noise must be computable in sensible computational time as simulations can require noise to be generated on every timestep. The issue with generating this kind of noise is that it’s tricky to achieve all three. If a noise is heavily spatially distributed, it’s generally too slow to generate for large numbers of cells, on every timestep of a simulation. In this project, two random noises: Perlin noise and a smoothed variant of Gaussian noise, are implemented and analysed in detail. The runtime of both with respect to their various parameters is studied, hypothesis testing is employed to explore to what extent different versions of these noises are normally distributed, and extensive work is done to figure out a way of extracting a length scale from a given noise. The aim is to use those techniques to be able to find out which type of noise should be used for a desired spatial behaviour. The behaviours of both noises depend heavily on the parameter values given, but the broad conclusions are that Perlin noise has an asymptotically faster runtime, but Smooth Gaussian tends to run faster, Perlin noise is more spatially correlated, and Smooth Gaussian more normally distributed. In the conclusions of this project a test simulation of a population of cells is implemented, both noises are added, and desirable results of random, but spatially correlated movement is observed.
+\pagebreak
+
+%TABLE OF CONTENTS
+\tableofcontents
+\addcontentsline{toc}{section}{Abstract}
+\pagebreak
+
+%WORK
+\section{Introduction}
+
+The aim of this project is to generate random noise that is correlated on a specific length scale. Spatially correlated noise \cite{spatcor} is a type of noise which is present in many biological systems and simulations. It refers to noise which when applied to a spatial context, has a high probability of having a similar value over a small length scale, and is randomly distributed over a larger length scale. In a biological context, it relates to biological processes \cite{bionoise} or environmental conditions which aren’t independent of each other but are influenced by nearby regions or neighbouring cells.
+
+A specific example is, if you were modelling cells by multiple points on a cell membrane, and your random noise was simulating the addition of chemicals which agitated the movement of the cells in some way. If two nodes represent nearby points on the same cell membrane, it’s clear biologically that any random noise acting on both nodes should be correlated, but on two different separated cells, the likelihood is that the noise should affect the nodes randomly.
+
+\subsection{Motivation}
+
+This work builds on work undertaken by my supervisor \cite{fergus} which uses Gaussian Random Fields. This method yields noise that is independent over long distances but correlated over short distances. However, the runtime of this algorithm is cubic order and not feasible other than for toy simulations. This method was improved using various approximations, but the resulting algorithm still has quadratic order and is infeasible other than for small simulations. Generating spatially correlated noise quickly enough to be applicable to larger simulations will require a new approach.
+
+\subsection{Challenges}
+
+Creating fast, normally distributed, and spatially correlated noise creates many challenges including controlling the trade-off between spatial correlation and normal distribution. These two properties are related, and ideally our noise will exhibit both behaviours, but it’s already clear to see that increasing the average spatial correlation to a length scale comparable to the size of your domain would affect the underlying distribution. The second challenge is how to measure the spatial correlation of the output noise; the noises are random, and the output will be different each run so there isn’t a clear empirical method for analysis. Ultimately, the noise needs to be able to run in feasible computational time, or it becomes practically useless.
+
+\subsection{Requirements}
+
+The goal of this project is to create methods of implementing random noise which can be applied to computational biological frameworks. The requirements for this noise are:
+\begin{enumerate}
+\item To be useful in complex simulations, the noise should be able to run in sensible computational time, it should certainly be asymptotically better than the kind of simulations it will be applied to.
+\item To be comparable to biological noise, it should be normally distributed to some extent.
+\item Finally, it should be possible to choose a desired spatial correlation profile for the generated noise to have, i.e., a request for noise which is 100\% correlated at 4 units, 75\% correlated at 12 units and 0\% correlated at 25 units should be able to be met.
+\end{enumerate} 
+
+\section{Background}
+
+\subsection{Context}
+
+The coordinated movement of cells in a population is instrumental in many biological processes including tissue growth during development. Many computational modelling frameworks have been developed to simulate cell populations, a selection of which have been implemented in the Chaste project \cite{chaste} and applied to several prototypical biology problems by Osborne and colleagues \cite{osbourne}.
+
+An important implementation detail in the application of these methods is that random noise is often required. An example of this is cell sorting by differential adhesion investigated by Osbourne and colleagues: of the five simulation frameworks they consider, two intrinsically include random noise, and the remaining three require it to be added to recapitulate the observed biological behaviour. \emph{[Figure \ref{fig:chaseproject}]}
+
+The implementation of noise chosen by Osbourne and colleagues is the simple addition of random numbers drawn from a normal distribution to each node in the simulation at each timestep. A node in this context is just a point in space that represents different things in different simulation frameworks. This implementation has the drawback, that the noise is not spatially correlated.
+
+%CHASTE
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = 0.5\textwidth]{chasteproject}
+	\caption{Simulations of cell sorting due to differential adhesion \cite{chaste}.}
+	\label{fig:chaseproject} 
+\end{figure}
+
+\subsection{Literature Review}
+
+A literature review was undertaken, into existing methods of efficiently generating random noise. Exploration began into methods used in computer graphics \cite{modpart} for generating natural looking textures including clouds, fire, and terrains \cite{terrain}. There is a parallel between video game terrain \cite{vidgames} which need to be independent over long distances but correlated over short distances and the noise that would be needed for this project. The benefits of looking down this avenue rather than diving straight into random number generation was that computer graphics, typically used for video games, need to have a minimal amount of stored data and the graphics need to be computable rapidly as they need to be updated multiple times a second.
+
+\subsection{Perlin Noise}
+
+Perlin and Gaussian were the most frequently mentioned noises. Perlin \cite{perlin} is a member of a set of noises called Gradient Noise \cite{infterrain}. Gradient Noise algorithms create a lattice of random gradients in the form of vectors of unit length. Then, you interpolate between the lattice points by employing dot products to calculate noise at specific locations. These algorithms are fundamentally different to methods used by Osbourne and colleagues of creating the same lattice but assigning them random scalar values rather than vectors. The scalar method creates distributions known as Value Noise which are much less smooth, especially at each of the lattice points. 
+
+\subsection{Simplex Noise}
+
+Perlin Noise uses the Cartesian grid as its base lattice. There are other gradient noises, including Simplex noise \cite{clouds} which divides the space into simplices, then chooses a random gradient for each lattice point, and interpolates by using the three surrounding points (assuming 2 dimensions) rather than four. Simplex noise has the benefit of being slightly computationally cheaper than Perlin over fixed grids, but on unstructured meshes, as would likely be optimal for biological simulations, the difference is slight, and Perlin noise is more comprehensible to implement and analyse.
+
+\subsection{Smooth Gaussian Noise}
+
+Gaussian noise is the simplest implementation. It involves sampling from the normal distribution at every point you want a noise value for. Clearly this won't meet the spatial correlation requirement laid out previously. However, in this area of research, there is another tool which utilises the normal distribution, called Gaussian Smoothing \cite{kernelsmoothing}. This involves calculating a Gaussian kernel, also called the normal probability density distribution. Applying a Gaussian kernel to an image using methods of convolution gives us a blurred effect on the original image. Convolution in this scenario is the method of combining two arrays of different sizes (but same dimensionality) to give an array of the size of the larger array. While this is mostly used for smoothing images, the fundamental result is that you are changing the underlying image slightly to give it spatial correlation, while preserving as much of the input as possible. The outcome is that it was discovered that using a Gaussian kernel overlaid over a normally distributed noise, with the correct parameter values, can create a noise which keeps the benefits of the original noise and is normally distributed, while having the benefits of the new spatial correlation. The immediate drawback is the trade-off between spatial correlation and normal distribution. If the noise is highly spatially correlated, it will become less normally distributed.
+
+\subsection{Technology}
+
+It was obvious that implementation in Python was the best choice. This is because there are many open-source implementations of both Perlin noise and Image Smoothing \cite{gaussmooth} and the most readily available support and research is implemented in Python in this area. The most obvious benefit of implementation in Python is the number of useful libraries available, including: matplotlib \cite{matplotlib}, and perlin-noise \cite{perlinpy} (a noise generation graphics library for Perlin noise). For a good proportion of the work, it’s useful to be able to display it in an image, which made matplotlib the obvious choice, it also has a very simple API which allowed the focus to be kept on the actual implementation, keeping the programming streamlined.
+
+\section{Implementations}
+
+\subsection{Perlin Noise Implementation}
+
+Conceptually, Perlin noise is simple: a space is divided into a grid of lattice points, and each lattice point is assigned a random unit vector. To get a noise value for any point not on this lattice, run an interpolation function on the four enclosing lattice points. Notation-wise, each square of this grid is referred to as an Octave, and the vital parameter here is the size of these Octaves. This implementation follows from code previously implemented \cite{perlinpy},  where the whole N-by-N grid is transposed down to a grid of OctSize-by-OctSize squares. On this new grid, the coordinates which are whole numbers are treated as the lattice points, and interpolation is used to sample from any non-whole number coordinates. The two-dimensional implementation is described in pseudocode based on Python here, the full code is available in the Appendix.
+
+\begin{lstlisting}[language=Python, mathescape=true]
+	def perlinNoise(octSize,(x,y)):
+		x:=x/OctSize
+		y:=y/OctSize
+		Gs = $[(\lfloor x \rfloor, \lfloor y \rfloor) ,(\lceil x \rceil, \lfloor y \rfloor), (\lfloor x \rfloor, \lceil y \rceil), (\lceil x \rceil, \lceil y \rceil)]$
+		Cs = Gs.map(contribution(x,y))
+		return sum(Cs)
+	def contribution((x,y),(gx,gy)): 		
+		#gs: coords of a lattice point surrounding (x,y)
+		if (gx,gy) not in C:		#C: global cache
+			C(gx,gy) = generateRandomVec(gx,gy)
+		vs,vy = C(gx,gy)
+		dx,dy = (gx-x),(gy-y)	
+		w = fade(1-|dx|)*fade(1-|dx|)
+		return w*(vx,vy)$\cdot$(dx,dy)
+\end{lstlisting}
+
+Fade \emph{[L13]}, \emph{[Figure \ref{fig:fade}]} is a smoothing quintic equation $x^3(6x^2-15x+10)$ which has a desirable behaviour when given $0\le x\le 1$. It’s the behaviour of this function that gives Perlin noise the smooth transitions around the lattice points.
+
+%Figure
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = 0.5\textwidth]{fade}
+	\caption{Fade Function: $0\le x\le1$.}
+	\label{fig:fade} 
+\end{figure}
+
+\subsection{Smooth Gaussian Noise Implementation}
+
+It’s not immediately obvious how to implement Smooth Gaussian noise point by point as we did with Perlin noise. This implementation creates an N-by-N grid of noise, but later in this project there’s another approach shown of generating blocks at a time, by utilising caching. 
+
+Initially, generate an N-by-N grid of normally distributed noise, drawing from the standard normal distribution, then create a Gaussian kernel, and combine them.
+
+\begin{lstlisting}[language=Python, mathescape=true]
+	def smoothGaussianNoise(k)
+		noise[i,j] = normal(0,1)
+		K = createKernel(k)
+		smoothNoise[x,y] = $\sum_{u=1}^{k}\sum_{v=1}^{k}noise[i-u,j-v]*K[u,v]$
+		return smoothNoise
+	def createKernel(k)
+		#Create two 2D arrays X,Y of size 2k*2k such that:
+		X[i,j] = -k+j
+		Y[i,j] = -k+i
+		Z[i,j] = X[i,j]$^2$ + Y[i,j]$^2$
+		F[i,j] = $\exp{\frac{-Z[i,j]}{k}}$
+		return F
+\end{lstlisting}
+
+CreateKernel creates a grid Z which has very high values at the edges, and moving inwards shrinks the values increasingly slowly until you reach a zero in the middle. Using the negative and the exponential in the calculation of F gives a grid which has a one in the middle, and then decreases very quickly to zero as you move outwards \emph{[Figure \ref{fig:kernels}]}. Once this is overlaid onto the random noise, it adds that “blurred” which makes the noise more spatially correlated as desired.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{kernels}
+	\caption{Gaussian Kernels with varying values of k.}
+	\label{fig:kernels} 
+\end{figure}
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{pgsamples}
+	\caption{100 by 100 samples of Perlin and Smooth Gaussian noises, ranging over their respective parameters.}
+	\label{fig:pgsamples}
+\end{figure}
+
+\subsection{Basic Runtime Analysis}
+
+Initial investigations were run to see how the parameters k and N would affect the time taken to generate an N-by-N grid of Smooth Gaussian noise. Analysing the algorithm line by line; generating the initial grid of random noise is $O(N^2)$, creating the kernel is $O(k^2)$, and the convolution step is $O(N^2k^2)$. This convolution step is the slowest and it characterises the overall runtime as $O(N^2k^2)$. As you can see from \emph{[Figure \ref{fig:ttsg}]} where k and N were fixed respectively, if you fix one, the other causes quadratic time.
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = 0.46\textwidth]{ttsgk}
+	\includegraphics[width = 0.5\textwidth]{ttsgN}
+	\caption{Time tests for Smooth Gaussian noise ranging k [left] and N [right].}
+	\label{fig:ttsg}
+\end{figure}
+
+However, if k $>$ N then the runtime ends up being $O(N^4)$, which will be slow for large N.
+
+Simply by looking at the algorithm for Perlin noise, it’s clear that the octave size won’t affect the runtime because it’s only used once (when all coordinates get divided by Octave Size). The runtime will be $O(N^2)$ to create an N-by-N grid of Perlin noise, as you can see in  \emph{[Figure \ref{fig:ttp}]}
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = 0.5\textwidth]{ttpos}
+	\includegraphics[width = 0.4\textwidth]{ttpN}
+	\caption{Time tests for Perlin noise ranging Octave Size [left] and N [right].}
+	\label{fig:ttp}
+\end{figure}
+
+The expectation would be that Gaussian noise is slower for k$>$1, however it’s faster to run for small N. For example, it takes $\sim$9 seconds to generate a 250 by 250 grid of Perlin noise (with octave value 100), whereas you can generate a 1500 by 1500 grid of Smooth Gaussian noise (with k = 500) in $\sim$2 seconds. This is because if you compare coefficients from the quadratic lines of best fit you can see that Gaussian is $O(9.6*10^{-7} N^2)$ and Perlin is $O(1.5*10^{-4}N^2)$.
+
+\section{Distribution Analysis}
+
+\subsection{Initial Observations}
+
+The second requirement is that our noise is, to some extent, normally distributed. Initially, visual analysis was undertaken by plotting both noises against a best fit normal distribution, implemented using the “norm” module from the scipy.stats \cite{scipy} library \emph{[Figure \ref{fig:normdists}]}.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{normdists}
+	\caption{Visualising the extent to which Perlin and Smooth Gaussian noises are Normally Distributed.}
+	\label{fig:normdists}
+\end{figure}
+
+
+For Perlin noise: if you fix the size of the region you’re sampling from, when you increase the octave size, the number of lattice points decreases, meaning there are fewer points which are drawn from the normal distribution. It’s clear that this means that the noise gets less and less normally distributed. For Smooth Gaussian noise: the initial values, before you lay a kernel onto them, are drawn from a normal distribution, so it makes sense that as you increase k, the “blurring” effect of the Gaussian kernel increases, meaning that you’re getting further away from those initial values, so the noise becomes less normally distributed.
+
+\subsection{Shapiro Wilks Hypothesis Testing}
+
+The next analysis was employing the Shapiro Wilks hypothesis test for normality \cite{norm}. With varying significance levels (shown in yellow), tests against the null hypothesis that the data was not normally distributed were performed. The test returns a statistic called the p value: if this value is greater than the significance level, then there is insufficient data to reject the hypothesis, so we can assume that the data is normally distributed with that significance. The scatter plots \emph{[Figure \ref{fig:shapirowilks}]} show multiple runs of this hypothesis test with different octave sizes and k values. Clearly the runs end up being slightly random, but they show the trend expected that increasing the parameters generally decreases the normality.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = 0.95\textwidth]{shapirowilks}
+	\caption{Shapiro Wilk p values of Perlin [left] and Smooth Gaussian [right] noises ranging their respective parameters.}
+	\label{fig:shapirowilks}
+\end{figure}
+
+
+To extract more information, tests were run with a fixed step length (10 units), testing multiple times for each step along the x axis \emph{[Figure \ref{fig:shapirowilksrepeats}]}. The percentage of tests which accepted the null hypothesis were plotted. The orange line shows the result of running the same test, the same number of times to a sample of noise drawn from a normal distribution. This line appears at about 92-95\% each time, which makes sense, because we’re testing at a 5\% significance level, especially considering sampling error. 
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = 0.95\textwidth]{shapirowilksrepeats}
+	\caption{Percentage of noises which passed the Shapiro Wilk hypothesis test for both Perlin [left] and Smooth Gaussian noises [right], [step length = 10, run 100 times per step, 500 samples per test with a 5\% significance level].}
+	\label{fig:shapirowilksrepeats}
+\end{figure}
+
+Both noises exhibit similar behaviour; as you increase their respective parameters, the level of normal distribution decreases. Perlin noise ‘drops’ off much faster than Smooth Gaussian noise, which makes sense, as for Smooth Gaussian noises, the base graph is always sampled from the normal distribution, even with the additional blurring added by larger and larger kernels. However, for Perlin noise, when you’re increasing the octave size, you’re quadratically decreasing the number of lattice points (drawn from the normal distribution), so it makes sense that Perlin noise would drop off in a quadratic manner. 
+
+\section{Spatial Correlation Analysis}
+
+\subsection{Overview}
+
+It seems intuitively that both noises studied so far will be spatially correlated to some extent. For Smooth Gaussian noise, it seems like the correlation will be related to k, the size of the kernel, but it’s not immediately obvious how directly k will affect the outcome, because of the overlapping which occurs when combining the kernel and base noise.
+
+Initial tests were run \emph{[Figure \ref{fig:scoverview}]}, to check that the noises did in fact exhibit the desired behaviour. The graphs below were drawn through sampling pairs of points and plotting the distance between them, against the absolute difference in their noise values.
+
+For both noises, as you increase the values of their respective parameters, they become more spatially distributed, Perlin noise more so than Smooth Gaussian.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{scoverview}
+	\caption{Initial Exploration into Spatial Correlation of Perlin and Smooth Gaussian noises.}
+	\label{fig:scoverview}
+\end{figure}
+
+\subsection{Correlation Function}
+To extract quantitative values out of these qualitative results, correlation functions were investigated. Specifically, iteration through all possible distances between points $(0 \le \delta \le \sqrt{2n^2})$, and using the following correlation function:
+
+\vskip .5cm
+$F(\delta) = \frac
+{\sum_{x,y=0}^{N}P[x,y]\times P([x,y] + \delta)}
+{\sum_{x,y=0}^{N}P[x,y]^2}$.
+\vskip .5cm
+
+
+Where P(x,y) is the noise value at point (x,y), and the denominator is included simply to normalise the values down to between 0 and 1.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{cfp}
+	\caption{Spatial Correlation Function applied to a 250 by 250 sample of Perlin noise.}
+	\label{fig:cfp}
+\end{figure}
+
+The results look as expected, examining the top graph \emph{[Figure \ref{fig:cfp}]} of Perlin noise with octave size = 100, when the distance is $<$5 units, the correlation is $\sim$1, and as you reach $\sim$65 units, the correlation hits 0. This makes sense, as examining the image representing this noise, the patches of the same colour (specifically looking at the yellow patch in the bottom left corner) are $\sim$65 units. However, then the graph dips below zero and returns at $\sim$175 (the length of the long blue patch in the middle). It’s initially unclear which of these values we should take to be the point at which the graph is no longer correlated.
+
+The lower graph \emph{[Figure \ref{fig:cfp}]} with octave size 10 is harder to analyse in the same way, either we take distances 5 or 12 when the graph first dips below 0 and returns to 0. But the argument could also be made that the graph hasn’t “settled down” to zero until distance = 100. However, the graphs still safely show us at which distance the noise is x\% spatially correlated, for x $>$ 5. 
+
+After the data has finished its initial descent, it oscillates at $\sim$0, demonstrating that this is the “natural level” of spatial correlation which the noise sits at, i.e., the amount of correlation which is caused by just generating random noise. If you run the same function on uniform random noise \emph{[Figure \ref{fig:cfr}]}, the correlation factor is 0 for all values apart from distance = 0.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{cfr}
+	\caption{Spatial Correlation Function applied to a 250 by 250 sample of Random noise.}
+	\label{fig:cfr}
+\end{figure}
+
+The same function can be run with Smooth Gaussian noise, with similar results. \emph{[Figure \ref{fig:cfsg}]}.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{cfsg}
+	\caption{Spatial Correlation Function applied to a 250 by 250 sample of Smooth Gaussian noise.}
+	\label{fig:cfsg}
+\end{figure}
+
+\subsection{R Values}
+
+Next, work was done investigating getting a few different values out of these graphs and plotting these values against different sizes of octaves and different k values respectively. Each value was the distance when the spatial correlation dropped below X\% and will be referred to as rX values from now on. \emph{[Figure \ref{fig:rvsg}]} shows an example on a 250 by 250 sample of Smooth Gaussian noise with k = 100. Here the r0 value is taken to be when the noise initially drops below 0, which seems feasible for this specific graph, but it’s not obvious that it’s the optimal approach in all situations.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{rvsg}
+	\caption{R Values of Smooth Gaussian Noise (k = 100).}
+	\label{fig:rvsg}
+\end{figure}
+
+Another consideration was to take areas under the graph, using numeric methods, instead of simply the distance values. After experimentation, this ended up giving similar results, and didn’t provide much extra precision.
+
+These values give information about the profile of the spatial correlation of a specific noise. For example, it can show at which distance this specific sample of noise drops below a 50\% correlation level, and at what point it first hits 0. But if we wanted a noise which was 75\% spatially correlated at $\sim$10 units, and 50\% correlated at $\sim$25, it doesn’t tell us what kind of noise or parameter to choose. The next step is to plot these values against octave size and k value for Perlin and Gaussian noises respectively, so that given a specification of what kind of spatial correlation we need in our noise, an informed choice can be made about what type of noise and which parameter would be best.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{bigrvp}
+	\caption{Perlin noise: Octave Size vs Different R Values \newline [250 by 250 sample].}
+	\label{fig:bigrvp}
+\end{figure}
+
+Plotting different r values against octave size for Perlin noise \emph{[Figure \ref{fig:bigrvp}]} gives more information. Studying the pink line specifically, it shows that if a noise was desired which was 50\% correlated at $\sim$25, you should choose an octave size of $\sim$65. You would then also know that your noise would be 25\% correlated at $\sim$34 units and 90\% correlated at $\sim$7 units.
+
+The same can be done with Smooth Gaussian Noise \emph{[Figure \ref{fig:bigrvsg}]}, for a similar graph.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width = \textwidth]{bigrvsg}
+	\caption{Smooth Gaussian noise: K vs Different R Values \newline [250 by 250 sample].}
+	\label{fig:bigrvsg}
+\end{figure}
+
+This comparison shows how Perlin noise is more spatially correlated for k = octave size, almost 5 times so. It seems that the distribution of where it’s spatially correlated is similar for both noises, i.e., the ratio of the distances between lines is similar.
+
+The issue with these graphs is how irregular the top lines are: specifically, the r0 line in both noises. They’re so irregular, it’s not possible to draw a sensible line of best fit for them. This is because of the problem mentioned earlier about how it’s just not clear when to measure this r0 value. Should it be when the data first crosses the zero-correlation line, or when it finally levels out? It makes sense to be the latter, but it’s not obvious how to define “fully levelled out” in this situation. The benefit of the former method is that it underestimates the spatial correlation which is less dangerous than overestimating.
+
+\section{Unstructured Grids}
+
+Focus has been kept on methods of generating noise in N-by-N grids. Smooth Gaussian noise was significantly faster than Perlin noise at this, but there may be a problem when generating random noise on an unstructured grid \cite{unstruct}, which will be needed in most of the biological simulations discussed already. It’s inefficient to generate an entire N-by-N grid, just to get the noise values of n cells if $n < N^2$, which it may be if the cell population is sparse. A second implementation was explored, which allows more pipelining by caching in a similar way as the initial Perlin noise algorithm.
+
+The idea of this algorithm is that to generate a single point of noise, only the $k^2$ points which surround it are needed. We can then cache these points to be used later.
+
+\begin{lstlisting}[language=Python, mathescape=true]
+	smoothGaussianNoiseBlocks(k,K,(x,y))
+		if K == []
+			K = createKernel(k) 	#this will only be run on the first point
+			v = 0
+		Foreach (u,v) pair: 0<=u,v<k
+			pt = (x-u,y-v)
+			if pt not in C		#C: global cache
+				C(pt) = normal(0,1)
+			v += C(pt)*K[u,v]
+		return v
+\end{lstlisting}
+
+The runtime of this algorithm is $O(k^2)$ for each point. If k is small, this isn’t too bad, but if a larger k is chosen, then it can end up being much slower than Perlin Noise.
+
+\section{Application to a Simulation}
+
+The final stage of this project is applying these random noises to a test simulation, to see if it gives the desired results. The implementation used was an Object-Oriented approach \cite{oop}, each cell is an object which has attributes: position vector, id, and radius. The simulation is controlled step-by-step. During each step, the cells are given their new position vector based on how close they are to the cells around them. The interaction between cells is given by the following equation:
+
+\vspace{.5cm}
+
+\noindent
+For two cells i and j, interact(i,j) is as follows:
+\begin{lstlisting}[language=Python, mathescape=true]
+	def interact(i,j):
+		#cells are 'far away', there should be no interaction
+		if $|r_{ij}|$ > maxRadius:
+			return 0
+		
+		#cells are 'too close together', they should repel each other
+		if $|r_{ij}|$ < $s_{ij}$:
+			return $\hat{r_{ij}}  \mu s_{ij} $ln(1+$\frac{|r_{ij}|-s_{ij}}{s_{ij}})$
+			
+		#cells are 'close but not too close', they should attract gently
+		else:
+			return $\hat{r_{ij}} \mu (|r_{ij}|-s_{ij}) \exp$(-kc $\frac{	(|r_{ij}|-s_{ij})} {s_{ij}})$
+		
+	#Where:
+	#$r_{ij}$: distance vector between cell i and j
+	#$maxRadius$: maximum radius at which the cells interact
+	#$s_{ij}$: sum of the radii of cell i and j, ie their natural separation
+	#and $\hat{a}$ denotes the unit vector of $a$
+\end{lstlisting}
+
+This is a standard implementation of cell-cell behaviour called the overlapping spheres model \cite{springmodel}. If two cells are far apart, they don’t have any effect on each other’s motion and speed. If they’re very close together, they repel like springs, and if they’re reasonably close together, but not too close, they attract gently. The two parameters are $\mu$ and kc also called the spring, and attraction decay constants respectively. A high $\mu$ value, $(>1)$ results in cells bouncing off each other more dramatically. A low $\mu$ value allows cells to get very close together to each other before springing apart. A high kc value $(>1)$ causes cells to be highly attractive, and a low kc means cells must be very close together before being pulled towards one another.
+
+Once the new displacement vectors were calculated, Perlin noise was generated and added to each cell. This re-enforces the point made earlier about how important it is that the noise can be calculated in sensible computational time. We must re-calculate these noise values at each time step, for each cell, so it’s infeasible to run simulations with any useful number of data points unless this noise is calculable in constant time per point. The same application can be implemented with Smooth Gaussian Noise instead.
+
+The left images \emph{[Figure \ref{fig:sim}]} show 2 different runs of the simulation after the cells had been created and allowed to move about and interact with each other for $\sim$10 seconds. The right images show the cells another 10 seconds after adding random (top) and Perlin (bottom) noises respectively. The random noise causes the cells to move about independently of each other, but with the spatially correlated noise, the cells close together move in similar patterns.
+
+
+\begin{figure}[h]
+	\centering 
+	\includegraphics[width = 0.48\textwidth]{simr1}
+	\includegraphics[width = 0.48\textwidth]{simr2}
+	\includegraphics[width = 0.48\textwidth]{simp1}
+	\includegraphics[width = 0.48\textwidth]{simp2}
+	\caption{Simulations run before [left] and after [right] the addition of Random [upper] and Perlin [lower] noises.}
+	\label{fig:sim}
+\end{figure}
+
+\section{Conclusions}
+
+\subsection{Final Comparison}
+
+Theoretically Perlin noise is asymptotically faster than Smooth Gaussian, but Gaussian is significantly faster, especially for small k, for both N-by-N grids and unstructured grids. Both run in sensible computational time, are feasible for small biological simulations, and are asymptotically better than the kind of simulations they will be applied to, but Gaussian may be considered “better” in this aspect. 
+Both noises are normally distributed to some extent, and Gaussian noise remains normally distributed for longer than Perlin as you increase both parameters. Both noises display different levels of spatial correlation at different parameter values, and with analysis, it’s possible to choose a parameter which can give you the desired spatial correlation profile.
+
+As parameters increase: Gaussian noise gets slower to run, and both noises become less normally distributed and more spatially distributed.
+
+\subsection{Summary}
+
+This project has achieved its aim of discussing and analysing different kinds of noise, two different normally distributed, spatially correlated random noises have been given which can both be run in varying degrees of sensible computational time. Comparisons were made between both noises, and it was found that both could be useful for differing applications.
+
+Methods have been explored for measuring the spatial correlation of a given noise, which could be applied to other noises in future research.
+
+\subsection{Reflections}
+
+Upon starting this project, I thought the hardest element would be making the noise run fast enough to be useful for non-toy simulations. But it became evident that the hardest part was the work on spatial correlation. I thought it would be simple to get a value of spatial correlation out of a specific noise and to find a relationship between this and the input parameter. However, it was not clear how to get this value out, and a lot of the routes I went down, not discussed here, didn’t lead me anywhere. The implementation to the simulation, was particularly successful however.
+
+I ended up writing significantly more code than I expected. There are 20+ pages of successful code appended to this work, but at least 10 times as many were written in the process. I wrote many files of code for testing and analysing the presented work.
+
+This project gave me a chance to solidify many of the courses I've taken during my degree including PoPL, Imperative Programming, ADS, Computational Complexity and even Concurrent Programming  \cite{cp} (discussed below).
+
+\subsection{Concurrency}
+
+Perlin noise has no shared ‘read’ variables, and so is intrinsically parallelisable, and could be implemented concurrently. Smooth Gaussian noise has the problem that the base grid values are shared, meaning that neither of the algorithms shown so far can be directly implemented 100\% concurrently. The initial grid algorithm can be partly parallelised, as the base grid and kernel could be calculated by the first thread, and then the rest of the algorithm is easy to parallelise as the accesses to the kernel and shared variables are read only. The block-based algorithm could be implemented by having a dictionary of which points of the base grid had been calculated already. If the point was already in the dictionary, then you can safely access it, as all threads trying to access it will be read only. The only issue will be if two threads need the same point and it’s not in the dictionary, and they both calculate it themselves and write back at different times. This data inconsistency could cause issues, but it's an unlikely situation especially if the data is sparse, and the problems it would cause would likely not be noticeable. A solution would be to split the coordinate space up into contiguous blocks of size 2k-by-2k, and to create a lock \cite{threads} for each block. If a thread wanted to create a base point, it would have to obtain that lock first, and it would only be released after the base point was written back to the dictionary. To get around the problem of potentially having an infinite coordinate space and finite locks, you could have each lock responsible for multiple blocks. I.e. lock $(i,j)$ is responsible for any blocks with top left-hand coordinates of the form ($\alpha i,\alpha $j) for some fixed (large) alpha.
+
+\subsection{Future Work}
+
+The work done in this project on spatial analysis of random noise is a good starting point, but more could be done to come up with additional results. Specifically, I would like to do further exploration into measuring our r0 value. I would start by investigating sampling to see if I could make the analytical methods faster while maintaining accuracy, to see if there are any relationships which were missed in this research due to runtimes being too slow (10-20 minutes for some). It would be beneficial to investigate ways to measure when the graph “levels off” at that zero spatial correlation, and interesting to plot that value against Octave Size and K to see if the relationship becomes more obvious.
+
+I would also like to explore ways to get the simulation to run faster: currently the deficiency is that the algorithm checks all $N^2$ pairs each timestep. Initial pathways to look down include KD-Trees for quick nearest neighbour lookup \cite{kdtree}.
+
+Additionally, more analysis could be done on the simulation itself, to see how the spatial correlation of the cells compares to the predicted length scales evaluated in the static theoretical noise.
+
+\section{Bibliography}
+
+\subsection{References}
+
+\begin{thebibliography}{9}
+
+\bibitem{spatcor}
+Cepel, R. (2007). Statisical Analysis and Computer Generation of Spatially Correlated Acoustic Noise. pp.31–62. DOI: 10.32469/10355/5054.
+
+\bibitem{bionoise}
+Simpson, M.L. (2009). Noise in Biological Circuits. WIREs Nanomedicine and Nanobiotechnology, 1(2), pp.214–255. DOI: 10.1002/wnan.22.
+
+\bibitem{fergus}
+Cooper, F.R. (2018). A mathematical and computational framework for modelling epithelial cell morphodynamics. pp.85–106.
+
+\bibitem{chaste}
+Pitt-Francis, J., Pathmanathan, P., Bernabeu, M.O. and Bordas, R. (2009). Chaste: A test-driven approach to software development for biological modelling. Computer Physics Communications, 180(12), pp.2452–2471. DOI: 10.1016/j.cpc.2009.07.019.
+
+\bibitem{osbourne}
+Osborne, J.M., Fletcher, A.G., Pitt-Francis, J.M., Maini, P.K. and Gavaghan, D.J. (2017). Comparing individual-based approaches to modelling the self-organization of multicellular tissues. PLOS Computational Biology. DOI: 10.1371/journal.pcbi.1005387.
+
+\bibitem{modpart}
+Nishita, T. and Dobashi, Y. (2001). Modelling and rendering of various natural phenomena consisting of particles. In: Proceedings. Computer Graphics International 2001. [online] pp.149–156.DOI: 10.1109/CGI.2001.934669.
+
+\bibitem{terrain}
+Archer, T., 2011, April. Procedurally generating terrain. In 44th annual midwest instruction and computing symposium, Duluth (pp. 378-393).
+
+\bibitem{vidgames}
+Frade, M., de Vega, F.F. and Cotta, C. (2012). Automatic evolution of programs for procedural generation of terrains for video games. In: Soft Comput. DOI: 10.1007/s00500-012-0863-z.
+
+\bibitem{perlin}
+Green, S., 2005. Implementing improved perlin noise. GPU Gems, 2, pp.409-416.
+
+\bibitem{infterrain}
+Parberry, I., 2014. Designer worlds: Procedural generation of infinite terrain from real-world elevation data. Journal of Computer Graphics Techniques, 3(1), DOI: 10.1109/estream.2019.8732171.
+
+\bibitem{clouds}
+Shuai, W.A.N.G. and Yu-bo, J.I., 2009. Method of Rendering Clouds Based on Simplex Noise. Journal of Liaoning University of Petroleum \& Chemical Technology, 29(3), p.58.
+
+\bibitem{kernelsmoothing}
+Chung, M.K. (2020). Gaussian kernel smoothing. DOI:10.48550/arXiv.2007.09539.
+
+\bibitem{gaussmooth}
+Pei-Yung Hsiao, Shin-Shian Chou and Feng-Cheng Huang, "Generic 2-D gaussian smoothing filter for noisy image processing," TENCON 2007 - 2007 IEEE Region 10 Conference, Taipei, Taiwan, 2007, pp. 1-4, DOI: 10.1109/TENCON.2007.4428941.Perlin\_noise.
+
+\bibitem{matplotlib}
+Hunter, J.D. (2007). Matplotlib: A 2D graphics environment. Computing in Science \& Engineering, 9(3), pp.90–95. DOI:org/10.1109/MCSE.2007.55.
+
+\bibitem{perlinpy}
+Ildar, S. (2022). Python implementation for Perlin Noise with unlimited coordinates space. https://pypi.org/project/perlin-noise/.
+
+\bibitem{gaussker}
+J. Babaud, A. P. Witkin, M. Baudin and R. O. Duda, "Uniqueness of the Gaussian Kernel for Scale-Space Filtering," in IEEE Transactions on Pattern Analysis and Machine Intelligence, vol. PAMI-8, no. 1, pp. 26-33, Jan. 1986, DOI: 10.1109/TPAMI.1986.4767749.
+
+\bibitem{scipy}
+Virtanen, P., Gommers, R., Oliphant, T.E. and Haberland, M. (2020). SciPy 1.0: Fundamental Algorithms for Scientific Computing in Python. Nature Methods, 17(3), pp.261–272. DOI: 10.1038/s41592-019-0686-2.
+
+\bibitem{norm}
+Keya Rani Das, A. H. M. Rahmatullah Imon. A Brief Review of Tests for Normality. American Journal of Theoretical and Applied Statistics. Vol. 5, No. 1, 2016, pp. 5-12. DOI: 10.11648/j.ajtas.20160501.12.
+
+\bibitem{unstruct}
+Sales-Mayor, F. and Wyatt, R.E. (n.d.). A two-stage filter for smoothing multivariate noisy data on unstructured grids. Computers \& Mathematics with Applications, 47(6-7), pp.877–891. DOI:10.1016/S0898-1221(04)90072-7.
+
+\bibitem{cp}
+Lowe, G. (2022). Concurrent Programming. [online] Lecture Notes, University of Oxford. Available at: https://www.cs.ox.ac.uk/teaching/materials22-23/concurrentprogramming/.
+
+\bibitem{threads}
+Andrews, G.R. (2000). Foundations of Multithreaded, Parallel, and Distributed Programming. Addison-Wesley.
+
+\bibitem{oop}
+Gamma, E., Helm, R., Johnson, R. and Vlissides, J. (1995). Design Patterns: elements of reusable object-oriented software.
+
+\bibitem{springmodel}
+Pathmanathan, P., Cooper, J., Fletcher, A., Mirams, G. and Pitt-Francis, J. (2009). A computational study of discrete mechanical tissue models. Physical Biology, 6(3). DOI 10.1088/1478-3975/6/3/036001.
+
+\bibitem{kdtree}
+Virtanen, P., Gommers, R., Oliphant, T.E. and Haberland, M. (2020). SciPy. [online] scipy.spatial.KDTree. Available at: https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.KDTree.html.
+
+\end{thebibliography}
+
+
+\subsection{Appendices}
+\subsubsection{Perlin Implementation}
+\begin{lstlisting}[language=Python, mathescape=true]
+import math
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+from scipy.stats import norm
+
+#datatype having x and y values
+class Coord:
+    def __init__(self, x:float, y:float):
+        self.x = x
+        self.y = y
+
+    def map(self, f):
+        self.x = f(self.x)
+        self.y = f(self.y)
+
+    def get_bounds(self):
+        lowerX_bound = math.floor(self.x)
+        upperX_bound = math.floor(self.x + 1)
+        lowerY_bound = math.floor(self.y)
+        upperY_bound = math.floor(self.y + 1)
+        return [lowerX_bound, upperX_bound, lowerY_bound,upperY_bound]
+    
+    def print(self):
+        print("(", end = '')
+        print(round(self.x,2), end = '')
+        print(",", end = '')
+        print(round(self.y,2), end = '')
+        print(") ", end = '')
+
+    def value(self):
+        return self.x,self.y
+
+    def getweight(self) -> float:
+        return fade(1-abs(self.x))*fade(1-abs(self.y))
+
+class Vec:
+    def __init__(self, x:float, y:float):
+        self.x = x
+        self.y = y
+
+    def print(self):
+        print("(", end = '')
+        print(round(self.x,2), end = '')
+        print(",", end = '')
+        print(round(self.y,2), end = '')
+        print(") ", end = '')
+    
+    def value(self):
+        return self.x,self.y
+def halfzip(list:list[int]) -> list[Coord]:
+    a,b,c,d = list
+    return [Coord(a,c), Coord(a,d), Coord(b,c), Coord(b,d)]
+#returns c1-c2
+def subtract(c1:Coord, v2:Vec) -> Vec:
+    x1,y1 = c1.value()
+    x2,y2 = v2.value()
+    return Coord(x1-x2, y1-y2)
+def dot(v1:Vec, v2:Vec) -> float:
+    x1,y1 = v1.value()
+    x2,y2 = v2.value()
+    return x1*x2 + y1*y2
+#smoothes [0,1] value
+def fade(given_value: float) -> float:
+    if given_value < -0.1 or given_value > 1.1: 
+        raise ValueError('expected to have value in [-0.1, 1.1]')
+    return 6 * math.pow(given_value, 5) - 15 * math.pow(given_value, 4) + 10 * math.pow(given_value, 3)
+#assume seed = 1, octaves = 1
+
+class MyPerlinNoise:
+    def __init__(self, octSize: float = 1, seed: int = 1):
+        self.octSize: int = octSize
+        self.seed: int = random.randint(1,100)
+        self.cache: dict[Coord,Vec] = {}
+
+    #returns noise values for a pair of coordinates
+    def __call__(self, xy) -> float:
+        x,y = xy
+        coords = Coord(x,y)
+        #working coordinates we're trying to find noise for: Coord
+        coords.map(lambda x: x/self.octSize)
+
+        #bounding box around working coordinates: List[Int]
+        bounds = coords.get_bounds()
+        #grid points surrounding working coordinates: List[Coord]
+        gridpts = halfzip(bounds)
+        #vector values corresponding to those gridpoints: List[Vec], vector distances between each grid point and the working coordinates: List[Vec]
+        gridvecs = []
+        dists = []
+        for gridpt in gridpts:
+            gridvecs.append(self.getvector(gridpt))
+            dists.append(subtract(coords,gridpt))
+        #vector weights between each grid point and the working coordinates: List[Float], ie how much this should count for, points further away get a smaller weight and v.v.
+        weights = []
+        for dist in dists:
+            weights.append(dist.getweight())
+        #weighted contributions of each grid point: List[Float]
+        contributions = []
+        for i in range(0,4):
+            contributions.append(weights[i] * dot(gridvecs[i], dists[i]))
+        return sum(contributions)
+    def getvector(self, pt:Coord) -> Vec:
+        if pt not in self.cache:
+            self.cache[pt] = randVec(self.seed + hasher(pt))
+        return self.cache[pt]
+def hasher(coors: Coord) -> int:
+    x,y = coors.value() 
+    return max(1,int(abs(dot(coors, Coord(10**x, 10**y)) + 1,))    )
+#returns normalised vector, always same for a given seed
+def randVec(seed:int) -> Vec:
+    st = random.getstate()
+    random.seed(seed)
+    vec = Vec(random.uniform(-1,1), random.uniform(-1,1))
+    random.setstate(st) 
+    #this line has to be included so that it always creates same random vector for same input
+    return vec
+#plots a noise against the normal distribution on a given set of axes
+
+def perlin_noise(octSize, N):
+    A = np.zeros([N,N])
+    pn = MyPerlinNoise(octSize)
+    for i in range(N):
+        for j in range(N):
+            A[i,j] = pn((i,j))
+    return A
+\end{lstlisting}
+
+\subsubsection{Smooth Gaussian Implementation}
+\begin{lstlisting}[language=Python, mathescape=true]
+import numpy as np
+import scipy.signal
+import matplotlib.pyplot as plt
+import math
+import random
+from MyPerlin2 import *
+from scipy.stats import norm, entropy
+from scipy import stats
+
+#-------------------------------------------------
+#PARAMETERS FOR EDITING
+mean, std_dev = 0, 1
+#k  = 1
+#n = 100
+#-------------------------------------------------
+
+class Gaussian:
+    def __call__(self,m,s) -> float:
+        s = self.normal_dist(m,s)
+        return s
+
+    def normal_dist(self, m,s):
+        #s = random.uniform(-1,1)
+        s = np.random.normal(m,s)
+        return s
+
+def create_filter(k):
+    scale = math.ceil(k/2)
+    x = np.arange(-scale, scale)
+    y = np.arange(-scale, scale)
+    X,Y = np.meshgrid(x,y)
+    dist = np.sqrt(X**2 + Y**2)
+    filter = np.exp(-dist**2/(2*scale))
+    return filter
+
+def smooth(noise, k):
+    filter_kernel = create_filter(k)
+    return np.array(scipy.signal.fftconvolve(noise,filter_kernel, mode = 'same'))
+
+def smooth_gaussian_noise(k,n):
+    noise = Gaussian()
+    A = np.zeros([n,n])
+    for x in range(n):
+        for y in range(n):
+            A[x,y] = noise(mean, std_dev)
+
+    A = smooth(A, k)
+
+    return A
+\end{lstlisting}
+
+\subsubsection{Runtime Analysis}
+\begin{lstlisting}[language=Python, mathescape=true]
+import time
+from MyPerlin2 import *
+from SmoothGaussian import *
+import matplotlib.pyplot as plt
+
+def p_noise(octSize,n):
+    noise = MyPerlinNoise(octSize)
+    A = np.zeros([n,n])
+    for x in range(n):
+        for y in range(n):
+            A[x,y] = noise((x,y))
+    return A
+
+def g_noise(k,n):
+    noise = Gaussian()
+    A = np.zeros([n,n])
+    for x in range(n):
+        for y in range(n):
+            A[x,y] = noise(mean, std_dev)
+    A = smooth(A, k)
+    return A
+ 
+#octave size and k [0-N] on x axis and time on y
+def time_test1(stepSize, N, maxparam, noisetype):
+    if noisetype == "P":
+        name = "Perlin"
+        parameterName = "Octave Size"
+        get_noise = p_noise
+    else:
+        name = "Smooth Gaussian"
+        parameterName = "k"
+        get_noise = g_noise
+    xs = np.arange(1,maxparam,stepSize)
+
+    times = []
+    for x in xs:
+        print(x)
+
+        start = time.time()
+        get_noise(x,N)
+        end = time.time()
+        times.append(end-start)
+
+    a,b,c = np.polyfit(xs,times,2)
+    print(a,b,c)
+    plt.scatter(xs,times, color = "red", alpha = 0.75, marker = '.')
+    #plt.plot(xs, a*xs*xs+b*xs+c, linestyle = '--', color = "pink")
+    #plt.legend(loc = "upper left")
+    plt.title("Time tests for {} noise, ranging {}".format(name,parameterName))
+    plt.ylabel("Time taken (s)")
+    plt.xlabel(parameterName)
+
+    plt.show()
+
+#n on x axis [0-500] and time on y
+def time_test2(stepSize, defParam, maxN, noisetype ):
+    if noisetype == "P":
+        name = "Perlin"
+        parameterName = "Octave Size"
+        get_noise = p_noise
+    else:
+        name = "Smooth Gaussian"
+        parameterName = "k"
+        get_noise = g_noise
+    ns = np.arange(1,maxN,stepSize)
+    times = []
+    for n in ns:
+        print(n)
+        start = time.time()
+        get_noise(defParam,n)
+        end = time.time()
+        times.append(end-start)
+
+    a,b,c = np.polyfit(ns,times,2)
+    print(a,b,c)
+    plt.plot(ns,a*ns*ns+b*ns+c, linestyle = '--', color = "pink")
+
+    plt.scatter(ns,times, color = 'red', alpha = 0.75, marker = ".")
+
+    #plt.legend(loc = "upper left")
+    plt.title("Time tests for {} noise, ranging N".format(name))
+    plt.ylabel("Time taken (s) to generate a N-by-N grid of {} noise".format(name))
+    plt.xlabel("N")
+
+    plt.show()
+    
+stepSize = 10
+defN = 500
+maxparam = 1500
+
+defParam = 500
+maxN = 1500
+
+time_test1(stepSize, defN, maxparam, "G")
+time_test2(stepSize,defParam,maxN,"G")
+\end{lstlisting}
+
+\subsubsection{Distribution Analysis}
+\begin{lstlisting}[language=Python, mathescape=true]
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import norm
+from MyPerlin2 import *
+from SmoothGaussian import *
+
+N = 100
+f, axes = plt.subplots(2,3)
+params = [5,50,250]
+mus = np.zeros([2,len(params)])
+stds = np.zeros([2,len(params)])
+
+plt.suptitle("Visualising the Extent to which Perlin and Smooth Gaussian noises are Normally Distributed")
+bins = 50
+
+for i in range(len(params)):
+    print(i)
+    p_noise = perlin_noise(params[i], N).flatten()
+    g_noise = smooth_gaussian_noise(params[i],N).flatten()   
+
+    axes[0,i].set_title("Perlin Noise, Oct Size = {}".format(params[i]))
+
+    axes[1,i].set_title("Smooth Gaussian Noise, k = {}".format(params[i]))
+
+    #fit
+    pmu, pstd = norm.fit(p_noise)
+    gmu, gstd = norm.fit(g_noise)
+
+    #plot histograms
+    axes[0,i].hist(p_noise, bins = bins, density = True, color = "pink")
+    axes[1,i].hist(g_noise, bins = bins, density = True, color = "skyblue")
+
+    pxmin,pxmax = axes[0,i].get_xlim()
+    gxmin,gxmax = axes[1,i].get_xlim()
+
+    px = np.linspace(pxmin,pxmax,100)
+    gx = np.linspace(gxmin,gxmax,100)
+
+    pp = norm.pdf(px,pmu, pstd)
+    gp = norm.pdf(gx,gmu,gstd)
+
+    axes[0,i].plot(px,pp,color = "red")
+    axes[1,i].plot(gx,gp, color = "blue")
+
+plt.show()
+\end{lstlisting}
+
+\subsubsection{Spatial Correlation Analysis}
+\begin{lstlisting}[language=Python, mathescape=true]
+import numpy as np
+import matplotlib.pyplot as plt
+from SmoothGaussian import *
+from MyPerlin import *
+import random
+
+n = 100
+rs = [100,90,75,50,25,10,0]
+colors = ['#66c2a5','#fc8d62','#8d9fca','#e789c2','#a5d853','#ffd82f','#e5c494']
+
+def FastCorrelationFactor(noise):
+    N = len(noise)
+    def f(d):
+        total,sumSq = 0,0
+        for x in range(N):
+            for y in range(N):
+                xD = min(N-1,x+d)
+                yD = min(N-1,y+d)
+                dNoise = noise[x,yD] + noise[xD,y]
+                total += noise[x,y]*dNoise
+                sumSq += noise[x,y]**2
+        f_d = total/(2*sumSq)
+        return f_d
+
+    f_ds = []
+    ds = np.arange(1,N)
+    f_ds.append(f(0))
+    vals = []
+    founds = np.zeros((len(rs)), dtype=bool)
+    for i in range(len(rs)):
+        vals.append(None)
+
+    vals[0] = 0
+
+    for d in ds:
+        f_d = f(d)
+        for i in range(1,len(rs)):
+            if (not founds[i] and f_d < f_ds[0]*rs[i]/100):
+                vals[i] = d-1
+                founds[i] = True
+        f_ds.append(f_d)
+    ds = np.concatenate(([0],ds))
+
+    plt.plot(ds, f_ds)
+    return vals
+
+#noisetype = "perlin"|"gaussian", N = size of output, ok = #octaves|k value
+#output: return 2D array of perlin noise
+def get_noise(noisetype, N, ok = 1):
+    if noisetype == "gaussian":
+        return smooth_gaussian_noise(ok, N)
+    elif noisetype == "perlin":
+        gen = MyPerlinNoise(ok)
+        noise = np.zeros([N,N])
+        for i in range(N):
+            for j in range(N):
+                noise[i,j] = gen((i/N,j/N))
+        return noise
+    elif noisetype == "random":
+        noise = np.zeros([N,N])
+        for i in range(N):
+            for j in range(N):
+                noise[i,j] = random.uniform(-1,1)
+        return noise
+    else:
+        print("ERROR, noisetype != perlin|gaussian")
+
+N = 250
+oct = 1.25
+k = 100
+
+A = get_noise("perlin", N,oct)
+B = get_noise("gaussian", N, k)
+C = get_noise("random", N)
+#plt.imshow(C)
+plt.show()
+
+rvalues = FastCorrelationFactor(B)
+for i in range(len(rs)):
+    if rvalues[i] != None:
+        plt.axvline(rvalues[i], color = colors[i], label = "r{} = {}".format(rs[i], rvalues[i]))
+    print("r value {} = {}".format(rs[i], rvalues[i]))
+
+
+#plt.title("R Values of Random Noise")
+plt.title("R Values of Smooth Gaussian Noise (k = {})".format(k))
+plt.xlabel("Distance")
+plt.ylabel("Spatial Correlation")
+
+plt.legend(loc="upper right")
+plt.show()
+
+import numpy as np
+import matplotlib.pyplot as plt
+from SmoothGaussian import *
+from MyPerlin2 import *
+
+colors = ['#66c2a5','#fc8d62','#8d9fca','#e789c2','#a5d853','#ffd82f','#e5c494']
+
+def FastCorrelationFactor(noise):
+    N = len(noise)
+    def f(d):
+        total,sumSq = 0,0
+        for x in range(N):
+            for y in range(N):
+                xD = min(N-1,x+d)
+                yD = min(N-1,y+d)
+                dNoise = noise[x,yD] + noise[xD,y]
+                total += noise[x,y]*dNoise
+                sumSq += noise[x,y]**2
+        f_d = total/(2*sumSq)
+        return f_d
+
+    f_ds = []
+    f_ds.append(f(0))
+    vals = []
+    founds = np.zeros((len(rs)), dtype=bool)
+    for i in range(len(rs)):
+        vals.append(None)
+
+    vals[0] = 0
+
+    d = 0
+    while(d < N and not founds[len(rs)-1]):
+        f_d = f(d)
+        i = 1
+        for i in range(1,len(rs)):
+            if (not founds[i] and f_d < f_ds[0]*rs[i]/100):
+                vals[i] = d-1
+                founds[i] = True
+        f_ds.append(f_d)
+        d+=1
+
+    return vals
+
+def get_noise(noisetype, N, ok):
+    if noisetype == "g":
+        return smooth_gaussian_noise(ok, N)
+    elif noisetype == "p":
+        return perlin_noise(ok,N)
+    else:
+        print("ERROR, noisetype != perlin|gaussian")
+
+
+nt = "p"
+N = 100
+stepsize = 10
+t = 5
+params = np.arange(1,N,stepsize)
+rs = [100,90,75,50,25,10,0]
+
+rvals = np.zeros([len(params),len(rs)])
+
+if nt == "g":
+    paramtype = "Octave Size"
+    noisename = "Perlin"
+else:
+    paramtype = "K"
+    noisename = "Gaussian"
+
+for i in range(len(params)):
+    print(params[i])
+    noise = get_noise(nt, N, params[i])
+    vs = []
+    for j in range(t):
+        print(t)
+        vs += FastCorrelationFactor(noise)x
+
+    rvals[i] = vs
+    
+rvals = np.rot90(np.fliplr(rvals))
+print(rvals)
+
+for i in range(len(rvals)):
+    plt.scatter(params, rvals[i], color = colors[i], marker = "x")
+    a,b = np.polyfit(params,rvals[i],1)
+    plt.plot(params, a*params+b, color = colors[i],label = "r{}".format(rs[i]))
+
+\end{lstlisting}
+
+\subsubsection{Simulation}
+\begin{lstlisting}[language=Python, mathescape=true]
+import math
+import numpy as np
+import random
+
+def size(coord):
+    x,y = coord
+    return math.sqrt(x*x + y*y)
+    
+class Cell:
+    def __init__(self, x:float, y:float, id:int, r:float):
+        self.x = x
+        self.y = y
+        self.id = id
+        self.r = r
+
+class Pair:
+    def __init__(self, x:float, y:float):
+        self.x = x
+        self.y = y
+    def printPair(self):
+        return ("({},{})".format(self.x,self.y))
+
+def create_Cells(n, N, minRadius, maxRadius):
+    pairs = []
+    while(len(pairs)!=n):
+        x = np.random.randint(0,N)
+        y = np.random.randint(0,N)
+        if (x,y) not in pairs:
+            pairs.append((x,y))
+    i = 0
+    C = []
+    for x,y in pairs:
+        r = np.random.uniform(minRadius,maxRadius)
+        c = Cell(x,y, i, r)
+
+        C.append(c)
+        i+=1
+    return C
+def unit(coord):
+    if coord == (0,0):
+        return (0,0)
+    x,y = coord
+    sz = size(coord)
+    return (x/sz,y/sz)
+
+def F(I, J, maxRadius, mu, kc):
+    #print("{},{}: ".format(I.id,J.id), end  ='')
+    if (I == J):
+        #print("same node, force = (0,0)")
+        return Pair(0,0)
+    ri = (I.x,I.y)
+    rj = (J.x,J.y)
+    sij = I.r+J.r       #natural separation between cell I and J
+    rij = (I.x-J.x, I.y-J.y)         #distance between cells
+    
+
+    #too far away, no attraction or repulsion
+    if size(rij) > maxRadius:
+        #print("far away, force = (0,0)")
+        return Pair(0,0)
+    
+    urij = unit(rij)
+    #if too close together, repel
+    if size(rij) < sij:
+        frac = (size(rij) - sij)/sij
+        const = mu*sij*math.log(1+frac)
+        urijx,urijy = urij
+        ans = Pair(urijx*const, urijy*const)
+        #print("too close, force = {}".format(ans.printPair()))
+
+        return ans
+
+    #if apart but not too far, attract
+    frac = (size(rij)-sij)/sij
+    exponential = math.exp(-kc*frac)
+    const = mu*(size(rij)-sij)*exponential
+    urijx,urijy = urij
+    ans = Pair(urijx*const,urijy*const)
+    #print("far, force = {}".format(ans.printPair()))
+
+    return ans
+
+def Cells_to_Coords(C, n):
+    xs = []
+    ys = []
+    rs = []
+    for i in range(n):
+        xs.append(C[i].x)
+        ys.append(C[i].y)
+        rs.append(C[i].r*100)
+    return xs,ys,rs
+
+def update_cells(forces,C,n,t, cellSpeed):
+    xForce = 0
+    yForce = 0
+    for i in range(n):
+        for j in range(n):
+            xForce += forces[i,j].x
+            yForce += forces[i,j].y
+        C[i].x += xForce*t*cellSpeed
+        C[i].y += yForce*t*cellSpeed
+        xForce = 0
+        yForce = 0
+    return C
+
+def add_noise(C, PNx, PNy, n,N, noiseSize,cellSpeed):
+    for i in range(n):
+        xNoise = PNx((C[i].x/N, C[i].y/N))
+        yNoise = PNy((C[i].x/N, C[i].y/N))
+        C[i].x += random.uniform(-1,1)
+        C[i].y += random.uniform(-1,1)
+        #C[i].x += xNoise*noiseSize*cellSpeed
+        #C[i].y += yNoise*noiseSize*cellSpeed
+    return C
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import math
+from scipy.interpolate import LinearNDInterpolator
+from scipy import interpolate
+from matplotlib.widgets import Slider, Button, TextBox
+from MyPerlin import *
+from SimHelper import *
+
+global c
+global C
+global n
+global PNx
+global PNy
+global newn
+global mu
+global kc
+global t
+global noiseSize
+global cellSpeed
+
+N = 100 #size of grid
+init_n = 50 #number of points
+n = init_n
+init_cellSpeed = 1
+cellSpeed = init_cellSpeed
+init_noiseSize = 1
+noiseSize = init_noiseSize
+newn = n
+C = []
+maxRadius = 6
+minRadius = 2
+init_mu = 0.05
+mu = init_mu #spring constant, controls size of force
+init_kc = 1
+kc = init_kc #defines decay of attractive force
+init_t = 0.5
+t = init_t #percentage of a second each timestep takes
+init_octaves = 4
+octaves = init_octaves
+#light to dark
+colorpallete = ['#f2f4f9','#b8d1ff','#c2cee5','#51a2da']
+COL = colorpallete[3]
+COL2 = colorpallete[2]
+COLinnerbg = colorpallete[1]
+COLbg = colorpallete[0]
+
+PNx = MyPerlinNoise(init_octaves,1)
+PNy = MyPerlinNoise(init_octaves,2)
+
+fig, ax = plt.subplots()
+fig.subplots_adjust(left = 0.25, bottom = 0.3)
+ax.set_xlim(0,N)
+ax.set_ylim(0,N)
+#ax.set_title("Cell Behaviour with Random Noise", fontsize = 20)
+ax.set_xticks([])
+ax.set_yticks([])
+ax.set_facecolor(COLinnerbg)
+fig.set_facecolor(COLbg)
+plt.setp(ax.spines.values(), color = COL2, linewidth = 4)
+
+
+#octave changing
+axOctaves = fig.add_axes([0.25,0.25,0.65,0.03])
+OctSlider = Slider(
+    ax = axOctaves,
+    label = "Number of Octaves",
+    valmin = 1,
+    valmax = 10,
+    valinit = init_octaves,
+    initcolor = 'none',
+    color = COL2,
+    track_color = COL2,
+)
+def updateOctaves(val):
+    octaves = OctSlider.val
+    global PNx
+    global PNy
+    PNx = MyPerlinNoise(octaves, 1)
+    PNy = MyPerlinNoise(octaves,2)
+OctSlider.on_changed(updateOctaves)
+
+#noise size
+axNoiseSize = fig.add_axes([0.25,0.2,0.65,0.03])
+NoiseSlider = Slider(
+    ax = axNoiseSize,
+    label = "Noise Effect",
+    valmin = 0,
+    valmax = 10,
+    valinit = init_noiseSize,
+    initcolor = 'none',
+    color = COL2,
+    track_color = COL2,
+)
+def updateNoiseSize(val):
+    global noiseSize
+    noiseSize = val
+NoiseSlider.on_changed(updateNoiseSize)
+
+#mu
+axMu = fig.add_axes([0.25,0.15, 0.65,0.03])
+MuSlider = Slider(
+    ax = axMu,
+    label = "Mu (Spring Constant)",
+    valmin = 0,
+    valmax = 1,#play around
+    valinit = init_mu,
+    initcolor = 'none',
+    color = COL2,
+    track_color = COL2,
+)
+def updateMu(val):
+    global mu
+    mu = MuSlider.val
+MuSlider.on_changed(updateMu)
+
+#kc
+axKC = fig.add_axes([0.25,0.1,0.65,0.03])
+KCSlider = Slider(
+    ax = axKC,
+    label = "KC (attraction decay)",
+    valmin = 0,
+    valmax = 10, #play around
+    valinit = init_kc,
+    initcolor = 'none',
+    color = COL2,
+    track_color = COL2,
+)
+def updateKC(val):
+    global kc
+    kc = KCSlider.val
+KCSlider.on_changed(updateKC)
+
+#cell speed
+axCellSpeed = fig.add_axes([0.25,0.05,0.65,0.03])
+cellSpeedSlider = Slider(
+    ax = axCellSpeed,
+    label = "Cell Speed",
+    valmin = 0,
+    valmax = 10, #play around
+    valinit = init_cellSpeed,
+    initcolor = 'none',
+    color = COL2,
+    track_color = COL2,
+)
+def updateCellSpeed(val):
+    global cellSpeed
+    cellSpeed = cellSpeedSlider.val
+cellSpeedSlider.on_changed(updateCellSpeed)
+
+
+
+#adding new cells
+axNewCell = fig.add_axes([0.1,0.3, 0.09, 0.05])
+bNewCell = Button(axNewCell, "Add", color = COL2)
+def add_cell(val):
+    global newn
+    xs,ys,rs = Cells_to_Coords(C,n)
+    pairs = []
+    for i in range(n):
+        pairs.append((xs[i],ys[i]))
+    added = False
+    while not added:
+        x = np.random.randint(0,N)
+        y = np.random.randint(0,N)
+        r = np.random.uniform(minRadius,maxRadius)
+        if (x,y) not in pairs:
+            newCell = Cell(x,y,n,r)
+            C.append(newCell)
+            newn += 1
+            added = True
+bNewCell.on_clicked(add_cell)
+
+def update_n():
+    global n
+    n = newn
+
+
+
+
+def animate(i):
+    global C
+    update_n()
+    forces = []
+    for x in range(n):
+        for y in range(n):
+            forces.append(F(C[x], C[y], maxRadius, mu, kc))
+
+    forces = np.reshape(forces, (n,n))
+
+    update_cells(forces,C,n,t, cellSpeed)
+    PNx = MyPerlinNoise(octaves, 1)
+    PNy = MyPerlinNoise(octaves,2)
+    add_noise(C,PNx, PNy, n,N, noiseSize, cellSpeed)
+    xs,ys,rs = Cells_to_Coords(C,n)
+
+    line = ax.scatter(xs,ys, s = rs, c = COL, alpha = 0.6)
+    return line,
+
+def init():
+    global C
+    update_n()
+
+    C = create_Cells(n,N, minRadius, maxRadius)
+
+    xs,ys,rs = Cells_to_Coords(C,n)
+    line = ax.scatter(xs,ys ,s= rs, c = COL, alpha = 0.8)
+    return line,
+
+#start button
+axStart = fig.add_axes([0.1,0.35, 0.09, 0.05])
+bStart = Button(axStart, "Start", color = COL2)
+def start(val):
+    ani = animation.FuncAnimation(fig,animate,np.arange(1,200), init_func = init, interval = 1000*t, blit = True)
+    plt.show()  
+    bStart.set_active(False)
+bStart.on_clicked(start)
+
+#get input values for time and number of circles
+#time changing
+axTime = fig.add_axes([0.1,0.45,0.09,0.03])
+TimeSlider = Slider(
+    ax = axTime,
+    label = "Time scale",
+    valmin = 0,
+    valmax = 1,
+    valinit = init_t,
+    initcolor = 'none',
+    color = COL2,
+    track_color = COL2,
+)
+def updateTime(val):
+    global t
+    t = val
+TimeSlider.on_changed(updateTime)
+
+
+fig.text(0.08,0.55, "Population A", fontsize = 12)
+
+#n changing
+axn = fig.add_axes([0.1,0.5,0.09,0.03])
+nSlider = Slider(
+    ax = axn,
+    label = "No of Cells",
+    valmin = 0,
+    valmax = 1000,
+    valstep = 10,
+    valinit = init_n,
+    initcolor = 'none',
+    color = COL2,
+    track_color = COL2,
+)
+def updaten(val):
+    global newn
+    newn = val
+nSlider.on_changed(updaten)
+
+
+plt.show()
+\end{lstlisting}
+
+\end{document}
